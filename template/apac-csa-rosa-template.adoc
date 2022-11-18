@@ -1,12 +1,12 @@
 = The start of docs
 
 
-Managed Red Hat OpenShift on AWS (ROSA) 
-4.11.1
-Singapore Pools
+replace_mocp 
+replace_mocp_version
+replace_customer_name
 
 Customer Success Architect Team
-1.0 |  18-Nov-2022
+replace_doc_version |  replace_doc_date
 
 >>>
 
@@ -19,7 +19,7 @@ Customer Success Architect Team
 |===
 |Version|Date|Author|Changes
 
-|1.0|18-Nov-2022|Jeremy Tan|what did I change
+|1.0|replace_doc_date|replace_doc_author|replace_changelog
 ||||
 ||||
 ||||
@@ -30,7 +30,7 @@ Customer Success Architect Team
 
 === 2.1. Confidentiality, Copyright and Responsibility		
 
-This document is prepared specifically for the <Singapore Pools> +
+This document is prepared specifically for the <replace_customer_name> +
 Copyright 2022 Red Hat, Inc. All rights reserved. None of the work protected by copyright in this document may be reproduced or used in any way or by any graphic, electronic or mechanical means, including photocopying, recording, or storage and information retrieval systems, without Red Hat’s written permission except as required in order to share this information as intended with the confidential parties aforementioned. 
 
 === 2.2. About this document			
@@ -107,7 +107,7 @@ MAS did not opt for FIPS mode as they need to evaluate the impact of non-support
 === 4.2 The proposed environment
 
 
-These are the configurations that were gathered from Singapore Pools. 
+These are the configurations that were gathered from replace_customer_name. 
 |===
 |_Cluster Config_|_Values_
 
@@ -168,7 +168,7 @@ These are the configurations that were gathered from Singapore Pools.
 
 
 
-=== 4.3 Singapore Pools AWS architecture design
+=== 4.3 replace_customer_name AWS architecture design
 
 The AWS architecture diagram looks similar to below. The Quay Enterprise registry and RHACM/ACS which comes bundled with OpenShift Platform Plus (OPP) may be added to the diagram at a later stage. This will allow MAS to perform multi-cluster management as the container estate grows.
 
