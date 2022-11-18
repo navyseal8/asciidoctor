@@ -1,0 +1,579 @@
+= The start of docs
+
+
+Managed Red Hat OpenShift on AWS (ROSA) 
+4.11.1
+Singapore Pools
+
+Customer Success Architect Team
+1.0 |  18-Nov-2022
+
+>>>
+
+:toc: preamble
+
+>>>
+
+== 1. Changelogs
+
+|===
+|Version|Date|Author|Changes
+
+|1.0|18-Nov-2022|Jeremy Tan|what did I change
+||||
+||||
+||||
+|===
+
+
+== 2. Preface
+
+=== 2.1. Confidentiality, Copyright and Responsibility		
+
+This document is prepared specifically for the <Singapore Pools> +
+Copyright 2022 Red Hat, Inc. All rights reserved. None of the work protected by copyright in this document may be reproduced or used in any way or by any graphic, electronic or mechanical means, including photocopying, recording, or storage and information retrieval systems, without Red Hat’s written permission except as required in order to share this information as intended with the confidential parties aforementioned. 
+
+=== 2.2. About this document			
+
+The objective of this document is to report the results of the execution of the platform installed in MAS environment, and the recommended tested configurations.
+
+=== 2.3. Audience				
+
+This document is intended for the Cloud Architects, Containers SRE, and Security engineers of Monetary Authority of Singapore to review the current setup of OpenShift in the Amazon Cloud environment.
+
+== 3. Executive Summary
+
+This is a technical summary of the deployment of replace-mocp (release mocp-version) for replace-customer-name.  
+
+The OpenShift Platform needs to fulfil these MAS requirements:
+
+* Disconnected air-gapped environment.
+* Multi-AZ high availability setup
+* Infra labelled nodes to run non-application workload, with the option to autoscale in future.
+* Integration with AWS services like CloudWatch, Storage, SES without going through Internet (AWS private endpoint)
+* Im8 compliance, specifically on container security guidelines.
+
+The restricted disconnected installation faces few challenges, namely:
+
+* Lack of enterprise-grade image registry to store OCP install releases (and subsequent erratas), and replication across different VPC.
+* Strict SCP policy adopts zero-trust architecture. This caused many permission related issues. 
+* Route53 hosted private zones reside in a different AWS account from the OpenShift account. This design conforms to AWS well-architected framework and Red Hat recognise the inefficacy of the IPI installer to adapt to this build scenario. A RFE has been filed to address this.
+* Intermittent firewall that occasionally  break installation and mirroring processes.
+
+
+The day 2 activities were done over the course of 1 week, focusing on these areas:
+
+* Etcd encryption-at-rest for data protection
+* Enable API audit for observability around security violations when forwarded to SIEM
+* MachineSet setup for infra labelled nodes. Capable of autoscaling in the future.
+* Infra tainted nodes to house Logging, Monitoring and Ingress tolerated workloads
+* Oauth integration with AD RFC3207 identity provider, with hourly group sync 
+
+
+== 4. Red Hat OpenShift Platform Deployment
+
+=== 4.1. Expectation 
+
+
+OpenShift cluster will reside in the GCC v2.0 (Government on Commercial Cloud) platform that enforces top level security cloud practices. 
+
+As the development cluster will be deployed on AWS cloud, Infrastructure Provisioned Infrastructure (IPI) installation method is chosen to automate the cluster provisioning process. The restricted install mode is customisable, allowing tweaks to accommodate network CIDRs, serviceEndpoints, FIPs mode, proxies, imageContentSources, TLS trustBundles and more.
+
+The design considerations are:
+
+* *Air Gapped environment*
+
+As the cluster will have no Internet access, an offline mirror of OpenShift images release, and the Operators images need to be downloaded before any installation can take place. This mirror registry has to be constantly updated with new erratas/operators before an upgrade can happen. Another consideration is the replication of registries across VPCs if the primary mirrored registry endpoint is not allowed across VPC or AWS accounts.
+
+* *On-demand elastic scaling*
+OpenShift ClusterAutoScaler is possible with the elasticity capability of AWS. MAS prefer to manual scale their Cluster when needed. This feature is available but can be turned on when needed.
+
+* *Infra labelled Nodes*
+MAS wants to segregate infra-type workloads to run on specific large-size compute nodes. This allows for better Pods placement, and easier maintenance during upgrades. The infra components are from the Monitoring stack (Prometheus, AlertManager), Logging stack (ElasticSearch, Grafana), and Ingress routers shards.
+
+* *Integration with AWS services*
+MAS wants OpenShift Platform to integrate with AWS services. Elastic Filesystem (EFS), Elastic Block Storage (EBS), Simple Email Service (SES), and CloudWatch are some of the immediate requirements.
+
+* *Multi tenancy *
+The cluster will house several applications. To provide multi-tenancy, Network Policies need to be in place. Default-deny policies, and allow rules need to be explicitly managed. ResourceQuotas and LimitRange need to be set so that tenants do not over provision beyond their limit.  +
+This can get complex over time, but can be easily implemented as Policies across multiple OpenShift Clusters using Red Hat Advanced Cluster Management (RHACM). GitOps can be an alternative method.
+
+* *Im8 compliance*
+MAS wants to adhere to the organisation’s corporate governance framework (called ‘Im8’) for best-in-class practices, specifically on the areas of Containers and orchestration. +
+OpenShift fulfilled many regulatory requirements imposed by national standards or industry standards such as PCI DSS, CIS Benchmarks, NIST SP-800-53. +
+OpenShift is FIPS 140-2 capable. Only FIPS validated cryptographic libraries/algorithms are allowed to run. This affects the cluster in many ways, ranging from encrypted secrets stored on etcd, disk encryption ciphers, CRI-O FIPS aware containers runtime.  +
+MAS did not opt for FIPS mode as they need to evaluate the impact of non-supported ciphers on their applications.
+
+=== 4.2 The proposed environment
+
+
+These are the configurations that were gathered from Singapore Pools. 
+|===
+|_Cluster Config_|_Values_
+
+|OpenShift version|4.10.28
+|baseDomain|mas-dev.iz.gov.sg
+|ClusterID|aocpdevextaw01
+|fips|false
+|platform|aws
+|networking.machineNetwork.cidr|100.120.105/24
+|networking.clusterNetwork.cidr|172.31.64.0/18
+|networking.serviceNetwork.cidr|172.32.144.0/20
+|additionalTrustBundle|<do-not-disclose>
+|compute.hyperthreading|Enabled
+|compute.replicas|3
+|controlPlane.hyperthreading|Enabled
+|credentialsMode|Manual
+|imageContentSources|<do-not-disclose>
+|publish|Internal
+|sshKey|<do-not-disclose>
+|===
+
+
+|===
+|_AWS Config_|_Values_
+
+|Region|ap-southeast-1
+|Availability Zones|ap-southeast-1a
+||ap-southeast-1b
+||ap-southeast-1c
+|Subnet|100.120.105.0/26
+||100.120.105.64/26
+||100.120.105.128/26
+|Integrated Service|AWS Cloudwatch
+||AWS EFS
+|Master Node sizing|m5.xlarge, 120G disk
+|Worker Node sizing|c5.2xlarge, 120G disk
+|Infra machineset sizing|c5.2xlarge, 120G disk + 200G EBS
+|===
+
+|===
+|_OpenShift addons_|_Values_
+
+|Identify provider|<do-not-disclose>
+|Etcd encryption|Enabled
+|Audit mode|Enabled
+|Required operators|Logging
+||Monitoring
+||EFS CSI
+|Egress pools|100.120.105.[x-y]
+|Ingress sharding|Namespace label
+|machineSets|infra-<cluster-id>-ap-southeast-1a
+||infra-<cluster-id>-ap-southeast-1b
+||infra-<cluster-id>-ap-southeast-1c
+|machineConfig|99-worker-chrony.yaml
+||99-master-chrony.yaml
+|Etcd backup|Automated
+|===
+
+
+
+=== 4.3 Singapore Pools AWS architecture design
+
+The AWS architecture diagram looks similar to below. The Quay Enterprise registry and RHACM/ACS which comes bundled with OpenShift Platform Plus (OPP) may be added to the diagram at a later stage. This will allow MAS to perform multi-cluster management as the container estate grows.
+
+
+
+=== 4.4. Cluster Sizing
+
+To right size your cluster, you need to provision enough slack for short-term workload bursts. Normally the preferred per-node utilisation is set at 80% of the RAM size.  +
+You will need:
+
+* An estimate of each application’s memory footprint
+* Total number of pods expected in the cluster
+With this information, you can work backwards to determine the number of compute nodes you need to fulfil the expected workload. +
+Number of nodes = ( Number of pods ) x ( per app memory footprint) / 80% of per-node RAM  
+
+
+=== 4.5. AWS account limits
+
+
+The default AWS Service limits will affect your ability to install OpenShift clusters. You might need to request additional resources for your AWS account if your cluster size requires more.
+
+|===
+|_Components_|_Default AWS limit_|_Per cluster requirement_
+
+|Instance limits|Varies|7 instances
+|Elastic IPs (EIP)|5 EIP per account|1 EIP per AZ
+|Virtual Private Cloud (VPC)|5 VPC per region|1 VPC
+|Network Load Balancer (NLB)|20 per region|2 NLB + 1 Classic
+|NAT gateway|5 per availability zone|1 NAT gateway per AZ
+|Elastic Network Interfaces (ENIs)|350 per region|21 ENIs + 1 per AZ
+|VPC gateway|20 per account|1 VPC
+|S3 buckets|100 buckets per account|2 buckets
+|Security Groups|2500 per account|10 distinct security group
+|===
+
+
+== 5. Post-installation tasks
+
+=== 5.1. Machinesets
+
+
+Machinesets allow your cluster to adapt to changing workloads. For example, as a GPU workload increases, a new GPU machine replica can be manually or automatically added to the machineset, and subsequently removed when workload reduces.
+
+The Machine API Operator is capable of autoscaling your machineset but Cluster Autoscaler, Machine Autoscaler, and Machine health checks with threshold needs to be enabled. 
+
+
+|===
+|+apiVersion: ++machine.openshift.io/v1beta1++
+kind: ++MachineSet++
+metadata:
+  labels:
+    ++machine.openshift.io/cluster-api-cluster:++ ++<infrastructure_id>++ 
+  name: ++<infrastructure_id>-infra-<zone>++ 
+  namespace: ++openshift-machine-api++
+spec:
+  replicas: ++3++
+  selector:
+    matchLabels:
+      ++machine.openshift.io/cluster-api-cluster:++ ++<infrastructure_id>++ 
+      ++machine.openshift.io/cluster-api-machineset:++ ++<infrastructure_id>-infra-<zone>++ 
+  template:
+    metadata:
+      labels:
+        ++machine.openshift.io/cluster-api-cluster:++ ++<infrastructure_id>++ 
+        ++machine.openshift.io/cluster-api-machine-role:++ ++<infra>++ 
+        ++machine.openshift.io/cluster-api-machine-type:++ ++<infra>++ 
+        ++machine.openshift.io/cluster-api-machineset:++ ++<infrastructure_id>-infra-<zone>++ 
+    spec:
+      metadata:
+        labels:
+          ++node-role.kubernetes.io/infra:++ ++""++ 
+      taints: 
+        - key: “++node-role.kubernetes.io/infra”+
+
+|===
+
+
+
+
+
+
+
+
+
+
+
+
+=== 5.2. Infrastructure Nodes
+
+
+The infrastructure nodes are tainted with NoExecute, and no pods are able to schedule without adding  a matching toleration
+
+
+|===
+|$+ oc adm taint node <nodeName> node-role.kubernetes.io/infra=:NoExecute+
+
+|===
+
+In Section 5.2, the node labels are added to the machineset. When new node replicas are added, the node labels will be present.
+
+
+----
+     taints: 
+        - key: “node-role.kubernetes.io/infra”
+          operator: "Exist"
+          effect: “NoExecute”
+
+----
+|===
+|$+ oc scale machineset <infraID>-infra-<AZ> -n openshift-machine-api -replicas=X
+++$++ oc get machinesets -n openshift-machine-api+
+
+|===
+
+
+All logging, Monitoring and Ingress deployments must add these tolerations, and nodeSelector in order for them to deploy on these Infra labelled nodes.
+
+----
+|   spec:
+      nodeSelector:
+        +node-role.kubernetes.io/infra:++ ++''++
+      tolerations:
+      - key: ++"node-role.kubernetes.io/infra"++
+        operator: ++"Exists"++
+        effect: ++"NoExecute"+
+
+----
+
+
+
+
+=== 5.3. Authentication and Authorization
+
+
+It is desirable to automatically configure all authentication and authorization mechanisms backed by an OAuth provider. The most common identity provider widely used Active Directory which conforms to RFC 2307. 
+
+MAS used a secure Active Directory. The UID needs to be replaced with sAMAccountname for all search filters. Avoid using htpasswd for users as it will create another vaulting problem. 
+
+There is an OpenShift template available that can parametrize variables that suit your environment. It will create the necessary secrets and groupsync cronjobs.
+
+https://github.com/redhat-cop/openshift-management/tree/master/jobs[https://github.com/redhat-cop/openshift-management/tree/master/jobs]
+
+*Sample templating*
+
+----
+|$ oc process -f cronjob-ldap-group-sync.yml \
+-p NAMESPACE="<project name from previous step>"
+-p LDAP_URL="ldap://idm-2.etl.rht-labs.com:389" \
+-p LDAP_BIND_DN="uid=ldap-user,cn=users,cn=accounts,dc=myorg,dc=example,dc=com" \
+-p LDAP_BIND_PASSWORD="password1" \
+-p LDAP_GROUPS_SEARCH_BASE="cn=groups,cn=accounts,dc=myorg,dc=example,dc=com" \
+-p LDAP_GROUPS_FILTER="(&(objectclass=ipausergroup)(memberOf=cn=ose_users,cn=groups,cn=accounts,dc=myorg,dc=example,dc=com))" \
+-p LDAP_USERS_SEARCH_BASE="cn=users,cn=accounts,dc=myorg,dc=example,dc=com" \
+| oc create -f-
+
+----
+
+
+*Sample*: LDAP Oauth setup
+
+----
+|apiVersion: config.openshift.io/v1
+kind: OAuth
+metadata:
+  name: cluster
+spec:
+  identityProviders:
+  - name: MAS LDAP
+    mappingMethod: claim
+    type: LDAP
+    ldap:
+      attributes:
+        email: ["mail"]
+        id: ["dn"]
+        name: ["cn"]
+        preferredUsername: ["sAMAccountname"]
+      bindDN: "uid=admin,cn=users,cn=accounts,dc=mas,dc=com"
+      bindPassword:
+        name: ldap-bind-password
+      insecure: false
+      ca:
+        name: ipa-tls-ca
+      url: "ldaps://ldaps.mas.com:636/cn=users,cn=accounts,dc=mas,dc=com?sAMAccountname"
+
+----
+
+
+Once the LDAP sync has been sync, you can grant the groups to their respective roles. For example, granting cluster-admin role to a group of users named “admins”
+
+----
+|$+ oc adm policy add-cluster-role-to-group cluster-admin admins+
+
+----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+=== 5.4. Machineconfig
+
+
+Machine Config Operator manages updates to systemd, CRI-O and Kubelet, the kernel, Network Manager and other system features. It also offers a *MachineConfig* CRD that can write configuration files onto the host.  MAS used Machineconfig to update their chrony setting. Other similar configurations may follow this procedure. There are 2 default configpool. 1 each for master and  worker. 
+
+----
+|$ oc get machineconfigpool
+NAME      CONFIG                  UPDATED  UPDATING   DEGRADED  MACHINECOUNT  READYMACHINECOUNT  UPDATEDMACHINECOUNT DEGRADEDMACHINECOUNT  AGE
+master    rendered-master-dd...     True     False      False     3             3                  3                                0                     4h42m
+worker    rendered-worker-fde...    True     False      False     3             3                  3                                0                     4h42m
+----
+
+The base64 encoded chrony.conf file is then added into the YAML. 
+----
+|apiVersion: +machineconfiguration.openshift.io/v1++
+kind: ++MachineConfig++
+metadata:
+  labels:
+    ++machineconfiguration.openshift.io/role:++ ++master++
+  name: ++99++-masters-chrony-configuration++
+spec:
+  config:
+    ignition:
+      config: ++{}++
+      security:
+        tls: ++{}++
+      timeouts: ++{}++
+      version: ++3.2.0++
+    networkd: ++{}++
+    passwd: ++{}++
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,ICAgIHNlcnZlciBjbG9jay5yZWRoYXQuY29tIGlidXJzdAogICAgZHJpZnRmaWxlIC92YXIvbGliL2Nocm9ueS9kcmlmdAogICAgbWFrZXN0ZXAgMS4wIDMKICAgIHJ0Y3N5bmMKICAgIGxvZ2RpciAvdmFyL2xvZy9jaHJvbnkK
+        mode: ++420++ 
+        overwrite: ++true++
+        path: ++/etc/chrony.conf+
+
+----
+
+=== 5.5. Monitoring
+
+
+Monitoring stack is pre-configured and installed by default during the installation. It provides monitoring for core platform components. These components are installed in the *openshift-monitoring* namespace and are configurable via the Custom Resource in the *cluster-monitoring-config* configMap.
+
+Below is the sample
+
+----
+|+apiVersion: ++v1++
+kind: ++ConfigMap++
+metadata:
+  name: ++cluster-monitoring-config++
+  namespace: ++openshift-monitoring++
+data:
+  ++config.yaml:++ ++|
+++    prometheusK8s:
+++      nodeSelector:++
+        nodename: ++node-role.kubernetes.io/infra+
+
+----
+
+
+In order to support application monitoring, the user-workload has to be enabled
+
+----
+|apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+
+----
+
+
+
+
+
+
+
+
+
+
+
+
+=== 5.6. Logging
+
+
+The logging subsystem aggregates the following types of logs:
+
+* **A***pplication*
+Container logs generated by user applications running in the cluster, except infrastructure container applications.
+
+* *Infrastructure*
+Logs generated by infrastructure components running in the cluster and OpenShift Container Platform nodes, such as journal logs. Infrastructure components are pods that run in the openshift*, kube*, or default projects.
+
+* *Audit*
+Logs generated by auditd, which are stored in the /var/log/audit/audit.log file, and the audit logs from the Kubernetes apiserver and the OpenShift apiserver.
+
+Retention period for each type of logs are customisable.
+
+----
+|apiVersion: +"logging.openshift.io/v1"++
+kind: ++"ClusterLogging"++
+metadata:
+  name: ++"instance"++ 
+  namespace: ++"openshift-logging"++
+spec:
+  managementState: ++"Managed"++  
+  logStore:
+    type: ++"elasticsearch"++  
+    retentionPolicy: 
+      application:
+        maxAge: ++1d++
+      infra:
+        maxAge: ++7d++
+      audit:
+        maxAge: ++7d++
+    elasticsearch:
+      nodeCount: ++3++ 
+      nodeSelector:
+        ++node-role.kubernetes.io/infra:++ ++''++
+      tolerations:
+      - key: ++"node-role.kubernetes.io/infra"++
+        operator: ++"Exists"++
+        effect: ++"NoExecute"++
+      storage:
+        storageClassName: ++"<storage_class_name>"++ 
+        size: ++200G++
+      resources: 
+          limits:
+            memory: ++"16Gi"++
+          requests:
+            memory: ++"16Gi"++
+      proxy: 
+        resources:
+          limits:
+            memory: ++256Mi++
+          requests:
+            memory: ++256Mi++
+      redundancyPolicy: ++"SingleRedundancy"++
+  visualization:
+    type: ++"kibana"++  
+    kibana:
+      nodeSelector:
+        ++node-role.kubernetes.io/infra:++ ++''++
+      tolerations:
+      - key: ++"node-role.kubernetes.io/infra"++
+        operator: ++"Exists"++
+        effect: ++"NoExecute"++
+      replicas: ++1++
+  collection:
+    logs:
+      type: ++"fluentd"++  
+      fluentd: ++{}+
+----
+
+
+
+*Forwarding to Cloudwatch*  +
+Ensure IAM policies are permitted, AWS access are granted, and Cloudwatch endpoints are created.
+
+----
+|apiVersion: +v1++
+kind: ++Secret++
+metadata:
+  name: ++cw-secret++
+  namespace: ++openshift-logging++
+data:
+  aws_access_key_id: 
+  aws_secret_access_key:
+++—-++
+apiVersion: ++"logging.openshift.io/v1"++
+kind: ++ClusterLogForwarder++
+metadata:
+  name: ++instance++ 
+  namespace: ++openshift-logging++ 
+spec:
+  outputs:
+   - name: ++cw++ 
+     type: ++cloudwatch++ 
+     cloudwatch:
+       groupBy: ++logType++ 
+       groupPrefix: ++<group++ ++prefix>++ 
+       region: ++us-east-2++ 
+     secret:
+        name: ++cw-secret++ 
+  pipelines:
+    - name: ++infra-logs++ 
+      inputRefs: 
+++        -++ ++infrastructure++
+++        -++ ++audit++
+++        -++ ++application++
+      outputRefs:
+++        -++ ++cw+
+
+----
+
